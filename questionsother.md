@@ -124,4 +124,219 @@ module "ec2_instance" {
 - Как бы вы автоматизировали резервное копирование PostgreSQL?  
 - Как вы организуете CI/CD для инфраструктурного кода (Terraform + Ansible)?  
 
-Этот список можно адаптировать под конкретные требования вакансии. Если нужно углубиться в какую-то тему – дайте знать!
+```markdown
+# Вопросы для интервью на позицию L3 Engineer (6 вопросов по каждой технологии)
+
+## **1. Linux**
+
+### **1.1** Как найти топ-5 процессов по потреблению памяти?
+```bash
+ps aux --sort=-%mem | head -n 6
+```
+
+### **1.2** Как добавить статический маршрут для конкретного интерфейса?
+```bash
+ip route add 192.168.1.0/24 dev eth0
+```
+
+### **1.3** Как проверить, какой процесс использует открытый файл?
+```bash
+lsof /path/to/file
+```
+
+### **1.4** Как настроить автоматическое монтирование NFS при загрузке?
+```bash
+# В /etc/fstab:
+nfs-server:/export /mnt nfs defaults 0 0
+```
+
+### **1.5** Как изменить hostname без перезагрузки?
+```bash
+hostnamectl set-hostname newname
+```
+
+### **1.6** Как найти все файлы размером >100MB?
+```bash
+find / -type f -size +100M
+```
+
+---
+
+## **2. Kubernetes**
+
+### **2.1** Как посмотреть все Pods в конкретном namespace?
+```bash
+kubectl get pods -n <namespace>
+```
+
+### **2.2** Как создать ConfigMap из файла?
+```bash
+kubectl create configmap my-config --from-file=config.properties
+```
+
+### **2.3** Как подключиться к работающему Pod в debug-режиме?
+```bash
+kubectl exec -it <pod> -- /bin/bash
+```
+
+### **2.4** Как масштабировать Deployment?
+```bash
+kubectl scale deployment/my-app --replicas=5
+```
+
+### **2.5** Как посмотреть логи нескольких Pods одновременно?
+```bash
+kubectl logs -l app=my-app --tail=100
+```
+
+### **2.6** Как обновить образ в Deployment?
+```bash
+kubectl set image deployment/my-app my-app=nginx:1.21
+```
+
+---
+
+## **3. PostgreSQL**
+
+### **3.1** Как посмотреть активные подключения?
+```sql
+SELECT * FROM pg_stat_activity;
+```
+
+### **3.2** Как создать read-only пользователя?
+```sql
+CREATE ROLE readonly WITH LOGIN PASSWORD 'pass';
+GRANT CONNECT ON DATABASE mydb TO readonly;
+GRANT USAGE ON SCHEMA public TO readonly;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly;
+```
+
+### **3.3** Как сделать backup одной таблицы?
+```bash
+pg_dump -t my_table mydb > table_backup.sql
+```
+
+### **3.4** Как перестроть все индексы в базе?
+```sql
+REINDEX DATABASE mydb;
+```
+
+### **3.5** Как посмотреть размер всех баз данных?
+```sql
+SELECT datname, pg_size_pretty(pg_database_size(datname)) 
+FROM pg_database;
+```
+
+### **3.6** Как проверить прогресс длительного запроса?
+```sql
+SELECT pid, query, now() - query_start AS duration 
+FROM pg_stat_activity 
+WHERE state = 'active';
+```
+
+---
+
+## **4. Ansible**
+
+### **4.1** Как запустить плейбук только на определенных хостах?
+```bash
+ansible-playbook playbook.yml -l webservers
+```
+
+### **4.2** Как использовать переменные из файла?
+```yaml
+- hosts: all
+  vars_files:
+    - vars/secrets.yml
+```
+
+### **4.3** Как создать кастомный модуль?
+```python
+#!/usr/bin/python
+from ansible.module_utils.basic import AnsibleModule
+
+def main():
+    module = AnsibleModule(argument_spec={})
+    module.exit_json(changed=False)
+
+if __name__ == '__main__':
+    main()
+```
+
+### **4.4** Как сделать обработку ошибок?
+```yaml
+- name: Try something
+  command: /bin/false
+  ignore_errors: yes
+```
+
+### **4.5** Как использовать шаблоны Jinja2?
+```yaml
+- name: Configure app
+  template:
+    src: templates/app.conf.j2
+    dest: /etc/app.conf
+```
+
+### **4.6** Как создать динамический инвентарь для AWS?
+```bash
+ansible-inventory -i aws_ec2.yml --graph
+```
+
+---
+
+## **5. Terraform**
+
+### **5.1** Как инициализировать новый проект?
+```bash
+terraform init
+```
+
+### **5.2** Как проверить синтаксис без применения?
+```bash
+terraform validate
+```
+
+### **5.3** Как посмотреть план изменений?
+```bash
+terraform plan
+```
+
+### **5.4** Как применить изменения?
+```bash
+terraform apply
+```
+
+### **5.5** Как удалить все ресурсы?
+```bash
+terraform destroy
+```
+
+### **5.6** Как использовать переменные окружения?
+```bash
+export TF_VAR_region="us-west-1"
+```
+
+---
+
+## **6. Общие вопросы**
+
+### **6.1** Как бы вы настроили CI/CD для инфраструктурного кода?
+**Ответ:** GitLab CI + Terraform Cloud + Atlantis
+
+### **6.2** Как мониторить состояние кластера K8s?
+**Ответ:** Prometheus + Grafana + Alertmanager
+
+### **6.3** Как организовать backup PostgreSQL в K8s?
+**Ответ:** WAL-G + Kubernetes CronJob
+
+### **6.4** Как обеспечить безопасность Ansible плейбуков?
+**Ответ:** Ansible Vault + RBAC + минимальные привилегии
+
+### **6.5** Как оптимизировать стоимость облачных ресурсов?
+**Ответ:** Autoscaling + Spot Instances + Reserved Instances
+
+### **6.6** Как бы вы развернули высокодоступный кластер PostgreSQL?
+**Ответ:** Patroni + etcd + HAProxy
+``` 
+
