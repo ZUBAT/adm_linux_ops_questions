@@ -194,7 +194,7 @@ RAID 10:
 <details>
   <summary>Ответ</summary>
 
-При объявлении переменной через export - переменная будет доступна в любых других процессах, при обычном объявлении переменной - переменная будет доступна только в запущенном процессе.
+При объявлении переменной через export - переменная попадёт в окружение и будет унаследована дочерними процессами, запущенными из этой оболочки (но не произвольными другими процессами), при обычном объявлении переменной - переменная будет доступна только в запущенном процессе.
 
 </details>
 
@@ -280,7 +280,7 @@ cmd 2>&1 >/dev/null | grep pattern
 <details>
   <summary>Ответ</summary>
 
-Файл `/etc/fstab` содержит информацию о смонтированных каталогах в файловую систему. 
+Файл `/etc/fstab` содержит информацию о файловых системах, которые должны монтироваться (при загрузке или командой `mount -a`). Список смонтированных в данный момент файловых систем ядро отдаёт через `/proc/mounts` (`/proc/self/mountinfo`); `/etc/mtab` в современных дистрибутивах — симлинк на `/proc/self/mounts`. Удобно смотреть командой `findmnt`.
 
 </details>
 
@@ -364,7 +364,7 @@ kill(1111, SIGTERM);
 |-|-|-|
 | SIGTERM | 15 | Сигнал завершения (сигнал по умолчанию для утилиты kill) |
 | SIGKILL | 9 | Безусловное завершение |
-| SIGSTOP | 23 | Остановка выполнения процесса |
+| SIGSTOP | 19 | Остановка выполнения процесса (номер 19 для x86/ARM; на некоторых архитектурах отличается) |
 | SIGHUP | 1 | Закрытие терминала (перечитать конфигурацию) |
 | SIGINT | 2 | Сигнал прерывания (Ctrl-C) с терминала |
 
@@ -540,12 +540,784 @@ used = total - free - buff/cache
 3. Собрать сведения об аппаратуре.
 4. Выбрать устройства для запуска (диск, сеть).
 5. Идентифицировать системный раздел EFI.
-6. Загрузить BIOS / UEFI из NVRAM.
+6. Загрузить загрузчик (GRUB2 / systemd-boot) с раздела EFI (или из MBR в режиме BIOS).
 7. Определить какое ядро загрузить.
 8. Загрузить ядро.
 9. Создать структуры данных ядра.
 10. Запустить init / systemd как PID 1.
 11. Выполнить сценарии запуска.
 12. Запустить систему.
+
+</details>
+
+### systemd
+
+37. Что такое systemd и какие типы юнитов вы знаете? Чем отличаются `enable`, `start` и `mask`?
+
+<details>
+  <summary>Ответ</summary>
+
+systemd — система инициализации (PID 1) и менеджер сервисов. Всё, чем он управляет, описывается юнитами:
+- `.service` — сервис/демон; `.socket` — сокет для активации сервиса по запросу; `.timer` — запуск по расписанию;
+- `.target` — группа юнитов (аналог runlevel); `.mount` / `.automount` — точки монтирования;
+- `.path` — запуск при изменении файла; `.slice` / `.scope` — группы процессов в cgroups; `.device`, `.swap`.
+
+Юниты лежат в `/usr/lib/systemd/system` (от пакетов) и `/etc/systemd/system` (от администратора, приоритетнее).
+- `systemctl start` — запустить сейчас (до перезагрузки);
+- `systemctl enable` — создать симлинки для автозапуска при загрузке (`enable --now` — и запустить сразу);
+- `systemctl mask` — связать юнит с `/dev/null`, после чего его нельзя запустить ни вручную, ни как зависимость;
+- `systemctl daemon-reload` — перечитать файлы юнитов после изменения.
+
+</details>
+
+38. Как оформить своё приложение в виде systemd-сервиса? Как изменить параметры юнита из пакета, не редактируя его файл?
+
+<details>
+  <summary>Ответ</summary>
+
+Создать `/etc/systemd/system/myapp.service`:
+```ini
+[Unit]
+Description=My App
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=myapp
+ExecStart=/opt/myapp/bin/myapp --config /etc/myapp.yaml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+```bash
+systemctl daemon-reload
+systemctl enable --now myapp
+```
+Для изменения чужого юнита используется drop-in: `systemctl edit nginx` создаёт `/etc/systemd/system/nginx.service.d/override.conf`, который накладывается поверх оригинала и не перезатирается при обновлении пакета. Чтобы заменить `ExecStart`, его сначала нужно обнулить пустой строкой `ExecStart=`. Итоговый юнит смотрят через `systemctl cat nginx`.
+
+</details>
+
+39. Что такое systemd timers и чем они лучше cron?
+
+<details>
+  <summary>Ответ</summary>
+
+Таймер — юнит `.timer`, который запускает одноимённый `.service` по расписанию:
+```ini
+# /etc/systemd/system/backup.timer
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
+```
+Преимущества перед cron: логи задачи в journald (`journalctl -u backup`), ограничения ресурсов и зависимости как у любого сервиса, `Persistent=true` догоняет пропущенный запуск (если сервер был выключен), нет параллельного запуска той же задачи, есть монотонные таймеры (`OnBootSec=`, `OnUnitActiveSec=`).
+```bash
+systemctl list-timers --all
+systemd-analyze calendar "Mon..Fri 03:00"   # проверить выражение
+```
+
+</details>
+
+40. Как с помощью journalctl посмотреть логи сервиса, логи ядра, логи предыдущей загрузки? Как ограничить размер журнала?
+
+<details>
+  <summary>Ответ</summary>
+
+```bash
+journalctl -u nginx -f                  # логи сервиса в режиме follow
+journalctl -u nginx --since "1 hour ago"
+journalctl -b -p err                    # ошибки с момента текущей загрузки
+journalctl -b -1                        # предыдущая загрузка (полезно после падения)
+journalctl --list-boots
+journalctl -k                           # сообщения ядра (аналог dmesg)
+journalctl --disk-usage
+journalctl --vacuum-size=500M           # удалить старые записи сверх лимита
+```
+Постоянный лимит задаётся в `/etc/systemd/journald.conf` (`SystemMaxUse=`). Чтобы журнал переживал перезагрузку, нужен `Storage=persistent` (или существующий каталог `/var/log/journal`), иначе он хранится в `/run/log/journal`.
+
+</details>
+
+41. Что такое target в systemd? Как загрузиться в rescue/emergency режим?
+
+<details>
+  <summary>Ответ</summary>
+
+Target — юнит, группирующий другие юниты; заменяет runlevel из SysV init: `multi-user.target` (≈ runlevel 3), `graphical.target` (≈ 5), `rescue.target` (≈ 1, однопользовательский режим с базовыми сервисами и смонтированными ФС), `emergency.target` (минимальная оболочка, корень смонтирован только на чтение).
+```bash
+systemctl get-default
+systemctl set-default multi-user.target
+systemctl isolate rescue.target        # переключиться на лету
+```
+При загрузке: в меню GRUB нажать `e` и добавить к строке `linux` параметр `systemd.unit=rescue.target` (или `emergency.target`), затем Ctrl+X.
+
+</details>
+
+42. Система долго загружается. Как понять, что именно тормозит?
+
+<details>
+  <summary>Ответ</summary>
+
+```bash
+systemd-analyze                     # время firmware / loader / kernel / initrd / userspace
+systemd-analyze blame               # юниты, отсортированные по времени запуска
+systemd-analyze critical-chain      # цепочка зависимостей, определившая время загрузки
+systemd-analyze plot > boot.svg     # диаграмма загрузки
+journalctl -b -p warning            # ошибки и таймауты при загрузке
+```
+Частые причины: ожидание сети (`systemd-networkd-wait-online`, `NetworkManager-wait-online`), недоступный диск/NFS из `/etc/fstab` (таймаут 90 с), долгий `fsck`. Полезно также `systemd-analyze security <unit>` — оценка изоляции сервиса.
+
+</details>
+
+### Процессы, память, ядро
+
+43. Как в Linux создаётся новый процесс? Чем процесс отличается от потока?
+
+<details>
+  <summary>Ответ</summary>
+
+- `fork()` создаёт копию текущего процесса (память копируется лениво, по принципу copy-on-write); в родителе вызов возвращает PID потомка, в потомке — 0.
+- `exec()` (`execve`) заменяет образ процесса новой программой, PID сохраняется.
+- Родитель забирает код завершения через `wait()`/`waitpid()`, иначе потомок станет зомби.
+
+Оболочка запускает команду именно так: `fork` + `exec`. В ядре и процессы, и потоки создаются вызовом `clone()`; потоки одного процесса разделяют адресное пространство, открытые файлы и обработчики сигналов, а у процессов всё это своё.
+```bash
+ps -eLf | grep nginx      # потоки (колонка LWP)
+ls /proc/<PID>/task       # потоки процесса
+pstree -p                 # дерево процессов
+```
+
+</details>
+
+44. Что такое OOM killer? Как понять, что он сработал, и как защитить важный процесс?
+
+<details>
+  <summary>Ответ</summary>
+
+OOM killer — механизм ядра, который при нехватке памяти (и невозможности освободить кэш/свап) убивает процесс с наибольшим `oom_score` (в основном пропорционален потреблению памяти). Срабатывает как на уровне всей системы, так и на уровне cgroup при превышении `memory.max` (так появляются OOMKilled-контейнеры, код выхода 137 = 128 + SIGKILL).
+```bash
+journalctl -k | grep -iE 'out of memory|oom-kill'
+dmesg -T | grep -i oom
+cat /proc/<PID>/oom_score
+echo -500 > /proc/<PID>/oom_score_adj   # от -1000 (никогда не убивать) до 1000
+```
+В systemd-юните: `OOMScoreAdjust=-500`. В ряде дистрибутивов (Fedora, Ubuntu) дополнительно работает `systemd-oomd`, который убивает cgroup'ы заранее по метрикам давления памяти (PSI).
+
+</details>
+
+45. Что такое swap и swappiness? Нужен ли swap на серверах с большим объёмом памяти?
+
+<details>
+  <summary>Ответ</summary>
+
+Swap — область на диске, куда ядро вытесняет редко используемые анонимные страницы памяти. `vm.swappiness` (0–200, по умолчанию 60) задаёт, насколько охотно ядро свапит анонимную память по сравнению с вытеснением page cache: меньше значение — дольше держит процессы в RAM.
+
+Swap полезен и при большом объёме памяти: позволяет вытеснить неиспользуемые страницы и отдать RAM под кэш, сглаживает пики. Но активный свопинг — признак нехватки памяти. Для БД и Kubernetes-нод часто ставят низкий swappiness или отключают swap (kubelet долго требовал отключённый swap). Альтернатива — `zram` (сжатый swap в памяти).
+```bash
+swapon --show
+sysctl vm.swappiness
+vmstat 1        # колонки si/so — интенсивность swap-in/swap-out
+```
+
+</details>
+
+46. Что такое виртуальная память? Чем VSZ отличается от RSS? Что такое overcommit?
+
+<details>
+  <summary>Ответ</summary>
+
+Каждый процесс работает со своим виртуальным адресным пространством, ядро отображает его страницы на физическую память по требованию (при первом обращении — page fault).
+- **VSZ** — весь выделенный виртуальный объём (включая неиспользуемое и отображённые файлы), обычно сильно больше реального.
+- **RSS** — сколько страниц процесса сейчас в физической памяти (разделяемые библиотеки учитываются у каждого процесса). Точнее — PSS: `/proc/<PID>/smaps_rollup`.
+
+Overcommit — ядро разрешает выделить больше памяти, чем есть, рассчитывая, что не всё будет использовано. `vm.overcommit_memory`: `0` — эвристика (по умолчанию), `1` — разрешать всегда, `2` — строгий учёт (лимит = swap + RAM × `overcommit_ratio`%).
+```bash
+ps -o pid,vsz,rss,cmd -p <PID>
+grep -i commit /proc/meminfo
+```
+
+</details>
+
+47. Процесс висит в состоянии D и не убивается даже `kill -9`. Почему и что делать?
+
+<details>
+  <summary>Ответ</summary>
+
+D — непрерываемый сон: процесс внутри системного вызова ждёт ввода-вывода (диск, NFS, драйвер). Сигналы, включая SIGKILL, доставятся только после выхода из этого вызова, поэтому убить его нельзя. Нужно устранить причину ожидания:
+```bash
+ps -eo pid,stat,wchan:32,cmd | awk '$2 ~ /^D/'   # где процесс ждёт в ядре
+cat /proc/<PID>/stack                            # стек ядра (root)
+echo w > /proc/sysrq-trigger; dmesg -T | tail    # дамп всех заблокированных задач
+dmesg -T | grep -iE 'I/O error|hung_task|nfs'
+```
+Типичные причины: недоступный NFS-сервер (mount с `hard`), умирающий диск, зависший драйвер/хранилище. Если устройство не вернётся, помогает только перезагрузка.
+
+</details>
+
+48. Что находится в `/proc` и `/sys`? Чем они отличаются?
+
+<details>
+  <summary>Ответ</summary>
+
+Обе — виртуальные файловые системы, их содержимое генерирует ядро «на лету», на диске оно не хранится.
+
+`/proc` (procfs) — в первую очередь информация о процессах: `/proc/<PID>/cmdline`, `environ`, `status`, `fd/`, `maps`, `limits`, `cgroup`. Плюс общесистемные данные: `/proc/meminfo`, `/proc/cpuinfo`, `/proc/loadavg`, `/proc/mounts`, `/proc/cmdline` (параметры загрузки ядра) и настраиваемые параметры ядра в `/proc/sys/` (то, с чем работает `sysctl`).
+
+`/sys` (sysfs) — структурированное представление объектов ядра: устройства, драйверы, шины, модули, cgroups (`/sys/fs/cgroup`). Правило «одно значение — один файл». Например, `/sys/block/sda/queue/scheduler` — I/O-планировщик диска, `/sys/class/net/eth0/speed` — скорость интерфейса.
+
+</details>
+
+49. Как посмотреть и изменить параметры ядра через sysctl, чтобы изменения сохранились после перезагрузки? Какие параметры обычно тюнят?
+
+<details>
+  <summary>Ответ</summary>
+
+```bash
+sysctl net.ipv4.ip_forward               # прочитать (= cat /proc/sys/net/ipv4/ip_forward)
+sysctl -w net.ipv4.ip_forward=1          # изменить до перезагрузки
+echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/99-custom.conf
+sysctl --system                          # применить все файлы конфигурации
+```
+Часто тюнят: `net.core.somaxconn` (очередь входящих соединений), `net.ipv4.ip_local_port_range`, `net.ipv4.tcp_tw_reuse`, `fs.file-max` / `fs.inotify.max_user_watches`, `vm.swappiness`, `vm.max_map_count` (Elasticsearch/OpenSearch), `vm.dirty_ratio` / `vm.dirty_background_ratio`.
+
+В контейнере можно менять только параметры, изолированные namespace'ами (большинство `net.*`, часть `kernel.*` для IPC); остальные глобальны для всего хоста.
+
+</details>
+
+50. Как изменить приоритет процесса по CPU и по дисковому вводу-выводу?
+
+<details>
+  <summary>Ответ</summary>
+
+CPU: значение nice от -20 (наивысший приоритет) до 19 (низший), по умолчанию 0. Повышать приоритет (уменьшать nice) может только root.
+```bash
+nice -n 10 tar czf backup.tgz /data     # запустить с пониженным приоритетом
+renice -n 5 -p <PID>                    # изменить у работающего процесса
+```
+Диск: `ionice` — классы `1` realtime, `2` best-effort (уровни 0–7), `3` idle (только когда диск свободен). Эффект зависит от I/O-планировщика (в полной мере учитывается BFQ).
+```bash
+ionice -c3 -p <PID>
+ionice -c2 -n7 rsync -a /src /dst
+```
+В systemd и cgroups v2 то же задаётся через `CPUWeight=`, `IOWeight=`, `Nice=`, `IOSchedulingClass=`.
+
+</details>
+
+### Изоляция: namespaces, cgroups, capabilities
+
+51. Что такое namespaces в Linux? Какие они бывают?
+
+<details>
+  <summary>Ответ</summary>
+
+Namespaces — механизм ядра, который даёт группе процессов изолированное представление системного ресурса. На нём (вместе с cgroups) построены контейнеры.
+| Namespace | Что изолирует |
+|-|-|
+| mnt | точки монтирования |
+| pid | дерево PID (в контейнере свой PID 1) |
+| net | интерфейсы, маршруты, iptables/nftables, сокеты |
+| uts | hostname и domainname |
+| ipc | System V IPC, POSIX message queues |
+| user | UID/GID (root в контейнере ≠ root на хосте) |
+| cgroup | видимую иерархию cgroups |
+| time | часы CLOCK_MONOTONIC/BOOTTIME |
+
+```bash
+lsns                                     # список namespace'ов
+ls -l /proc/<PID>/ns
+nsenter -t <PID> -n ss -tlnp             # выполнить команду в net namespace процесса
+unshare --pid --fork --mount-proc bash   # оболочка в новом pid namespace
+```
+
+</details>
+
+52. Что такое cgroups? Чем cgroups v2 отличается от v1? Как ограничить ресурсы процесса?
+
+<details>
+  <summary>Ответ</summary>
+
+cgroups (control groups) — механизм ядра для учёта и ограничения ресурсов (CPU, память, I/O, число процессов) групп процессов.
+- **v1** — отдельная иерархия для каждого контроллера, процесс может быть в разных местах разных иерархий; сложно и непоследовательно.
+- **v2** — единая иерархия в `/sys/fs/cgroup`, единый интерфейс файлов (`memory.max`, `memory.high`, `cpu.max`, `io.max`, `pids.max`), корректный учёт page cache и writeback, PSI (`memory.pressure` и др.). Используется по умолчанию во всех современных дистрибутивах; systemd начиная с версии 258 v1 не поддерживает, Kubernetes перевёл v1 в режим поддержки.
+```bash
+stat -fc %T /sys/fs/cgroup          # cgroup2fs => v2
+systemd-cgtop                       # потребление по cgroup
+systemd-run --scope -p MemoryMax=512M -p CPUQuota=50% ./app
+systemctl set-property nginx.service MemoryMax=1G
+cat /sys/fs/cgroup/system.slice/nginx.service/memory.events   # счётчики oom/oom_kill
+```
+
+</details>
+
+53. Как определить, что вы находитесь внутри контейнера или виртуальной машины?
+
+<details>
+  <summary>Ответ</summary>
+
+```bash
+systemd-detect-virt            # тип виртуализации (kvm, vmware, docker, lxc ...) или none
+systemd-detect-virt -c         # только контейнерная
+hostnamectl                    # строки Virtualization / Chassis
+lscpu | grep -i hypervisor
+cat /proc/1/cgroup             # на хосте с v2: "0::/init.scope"
+ps -p 1 -o comm=               # в контейнере PID 1 — само приложение, а не systemd
+ls /.dockerenv /run/.containerenv   # маркеры Docker / Podman
+```
+Косвенные признаки контейнера: мало процессов, нет ядра и модулей (`/lib/modules` пуст), overlay в качестве корня (`findmnt /`).
+
+</details>
+
+54. Что такое capabilities в Linux? Как разрешить непривилегированному процессу слушать порт 80?
+
+<details>
+  <summary>Ответ</summary>
+
+Capabilities дробят привилегии root на отдельные права: `CAP_NET_BIND_SERVICE` (порты < 1024), `CAP_NET_ADMIN` (настройка сети), `CAP_SYS_ADMIN` (монтирование и многое другое, «почти root»), `CAP_CHOWN`, `CAP_KILL` и т.д. Это позволяет не запускать сервис от root целиком.
+```bash
+setcap 'cap_net_bind_service=+ep' /usr/local/bin/myapp
+getcap /usr/local/bin/myapp
+grep Cap /proc/<PID>/status && capsh --decode=<CapEff>   # текущие права процесса
+```
+В systemd: `AmbientCapabilities=CAP_NET_BIND_SERVICE` и `CapabilityBoundingSet=CAP_NET_BIND_SERVICE` при `User=myapp`. В Docker: `--cap-drop=ALL --cap-add=NET_BIND_SERVICE`; `--privileged` выдаёт все capabilities, поэтому опасен.
+
+</details>
+
+### Права доступа и безопасность
+
+55. Что означают права r, w, x для каталога? Что такое umask? Что значат права 0750?
+
+<details>
+  <summary>Ответ</summary>
+
+Для каталога:
+- `r` — прочитать список имён файлов;
+- `w` — создавать, удалять и переименовывать файлы в каталоге (только вместе с `x`);
+- `x` — входить в каталог и обращаться к файлам по имени.
+
+Поэтому удалить файл можно, имея права `w` и `x` на каталог, даже без прав на сам файл (если не выставлен sticky bit).
+
+`0750`: владелец — `rwx`, группа — `r-x`, остальные — нет доступа.
+
+umask — маска, которая убирает биты из прав по умолчанию для новых файлов (666) и каталогов (777). При `umask 022` файлы создаются с `644`, каталоги — с `755`; при `027` — `640` и `750`.
+```bash
+umask
+stat -c '%a %A %U:%G %n' file
+```
+
+</details>
+
+56. Что такое SUID, SGID и sticky bit? Как найти SUID-файлы в системе?
+
+<details>
+  <summary>Ответ</summary>
+
+- **SUID** (4000, `s` на месте x владельца) — исполняемый файл запускается с правами владельца файла. Пример: `/usr/bin/passwd` (root) меняет `/etc/shadow`.
+- **SGID** (2000) — на файле: запуск с правами группы файла; на каталоге: новые файлы наследуют группу каталога (удобно для общих папок).
+- **Sticky bit** (1000, `t`) — на каталоге удалять и переименовывать файлы может только их владелец, владелец каталога или root. Пример: `/tmp` (права `1777`).
+
+Заглавная `S`/`T` в `ls -l` означает, что бит стоит, но права `x` нет.
+```bash
+chmod u+s file; chmod g+s dir; chmod +t dir   # или chmod 4755 / 2775 / 1777
+find / -xdev -perm -4000 -type f 2>/dev/null   # аудит SUID-файлов
+```
+Лишние SUID-бинарники — частый путь повышения привилегий; на разделах для данных используют опцию монтирования `nosuid`.
+
+</details>
+
+57. Что такое ACL и когда их используют?
+
+<details>
+  <summary>Ответ</summary>
+
+POSIX ACL позволяют выдать права конкретным пользователям и группам сверх классической схемы «владелец/группа/остальные». Нужны, когда к каталогу должны иметь разный доступ несколько групп.
+```bash
+setfacl -m u:alice:rwx /srv/project        # права пользователю
+setfacl -m g:devops:rx /srv/project        # права группе
+setfacl -d -m g:devops:rwx /srv/project    # ACL по умолчанию для новых файлов
+getfacl /srv/project
+setfacl -x u:alice /srv/project            # удалить запись
+setfacl -b /srv/project                    # удалить все ACL
+```
+Наличие ACL видно по `+` в конце прав в `ls -l`. Запись `mask` ограничивает максимальные права для всех записей, кроме владельца. При копировании ACL сохраняют `cp -a` / `rsync -A`.
+
+</details>
+
+58. Файл не удаляется и не изменяется даже от root. В чём может быть причина?
+
+<details>
+  <summary>Ответ</summary>
+
+Скорее всего, на файл установлен атрибут immutable (`i`) — его нельзя изменить, удалить, переименовать и создать на него жёсткую ссылку, даже root. Атрибут `a` разрешает только дозапись (используют для логов).
+```bash
+lsattr file
+chattr -i file      # снять атрибут
+chattr +i file      # установить
+```
+Другие причины: файловая система смонтирована только на чтение (`findmnt -o TARGET,OPTIONS`; после ошибок ext4 может перемонтироваться в `ro`), запрет SELinux/AppArmor, файл открыт и заблокирован приложением, сетевая ФС с собственными правами.
+
+</details>
+
+59. Как настроить sudo? Как дать пользователю право выполнять только определённые команды?
+
+<details>
+  <summary>Ответ</summary>
+
+Правила хранятся в `/etc/sudoers` и `/etc/sudoers.d/`. Редактировать через `visudo` — он проверяет синтаксис (ошибка в sudoers может лишить всех доступа к sudo).
+```bash
+visudo -f /etc/sudoers.d/deploy
+```
+```
+# кто  хосты=(от_имени_кого)  команды
+%wheel  ALL=(ALL:ALL) ALL
+deploy  ALL=(root) NOPASSWD: /usr/bin/systemctl restart myapp, /usr/bin/journalctl -u myapp
+```
+Полезное: `sudo -l` — какие команды разрешены текущему пользователю; `visudo -c` — проверка конфигурации; `sudo -i` — login-оболочка root. Нельзя разрешать команды, из которых можно выйти в shell (`vim`, `less`, `find -exec`, `tar` с `--checkpoint-action`). Все вызовы sudo логируются в journald/auth.log. В Ubuntu 25.10+ по умолчанию используется sudo-rs — совместимая реализация на Rust.
+
+</details>
+
+60. Что такое SELinux и AppArmor? Как разобраться, что приложению мешает SELinux?
+
+<details>
+  <summary>Ответ</summary>
+
+Оба — системы мандатного контроля доступа (MAC): даже процесс от root может делать только то, что разрешено политикой. SELinux (RHEL, Fedora) работает с метками (контекстами) на файлах, процессах и портах; AppArmor (Ubuntu, Debian, SUSE) — с профилями на основе путей.
+
+SELinux, режимы: `enforcing`, `permissive` (только логирует), `disabled`.
+```bash
+getenforce; setenforce 0        # временно permissive (полностью отключить на лету нельзя)
+ls -Z /var/www; ps -eZ | grep nginx
+ausearch -m AVC -ts recent | audit2why   # почему запрещено
+restorecon -Rv /var/www                  # восстановить контексты по политике
+semanage fcontext -a -t httpd_sys_content_t "/srv/www(/.*)?"
+semanage port -a -t http_port_t -p tcp 8081
+setsebool -P httpd_can_network_connect on
+```
+AppArmor: `aa-status`, `aa-complain /etc/apparmor.d/<profile>`, `aa-enforce ...`, отказы — в `journalctl -k | grep apparmor`. Правильный путь — поправить контекст/булево значение/профиль, а не отключать защиту.
+
+</details>
+
+61. Какие меры вы примените для защиты SSH-сервера?
+
+<details>
+  <summary>Ответ</summary>
+
+В `/etc/ssh/sshd_config` (или файле в `/etc/ssh/sshd_config.d/`):
+```
+PermitRootLogin no                 # или prohibit-password
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AllowGroups ssh-users
+MaxAuthTries 3
+LoginGraceTime 30
+X11Forwarding no
+```
+Также: ключи ed25519 (в OpenSSH 10 поддержка DSA удалена), ограничение доступа файрволом/VPN или через bastion-хост, fail2ban/sshguard, 2FA, короткоживущие SSH-сертификаты вместо раздачи ключей, своевременные обновления OpenSSH.
+```bash
+sshd -t          # проверить синтаксис перед перезапуском
+sshd -T | grep -i passwordauth   # итоговая действующая конфигурация
+```
+Важно: для большинства опций sshd применяет первое найденное значение, а `Include` файлов `sshd_config.d/*.conf` обычно стоит в начале — настройки там перекрывают основной файл. Не закрывайте текущую сессию, пока не проверили вход в новой.
+
+</details>
+
+62. Что такое SSH port forwarding? Чем отличаются `-L`, `-R` и `-D`? Как подключиться через jump-хост?
+
+<details>
+  <summary>Ответ</summary>
+
+- `-L` (локальный) — порт на вашей машине пробрасывается к адресу, доступному с сервера:
+  `ssh -L 5432:db.internal:5432 user@bastion` — затем `psql -h localhost`.
+- `-R` (удалённый) — порт на сервере пробрасывается к адресу, доступному с вашей машины:
+  `ssh -R 8080:localhost:3000 user@server` — сервер видит ваше локальное приложение на `localhost:8080`.
+- `-D` — динамический SOCKS-прокси: `ssh -D 1080 user@server`.
+- `-N` — не выполнять команду (только туннель), `-f` — уйти в фон.
+
+Jump-хост: `ssh -J user@bastion user@internal` или в `~/.ssh/config`:
+```
+Host internal
+    HostName 10.0.0.5
+    ProxyJump bastion
+```
+
+</details>
+
+### Диски и файловые системы
+
+63. Диск заполнен, большой лог удалили, но место не освободилось, а `du` показывает меньше, чем `df`. Почему и как исправить?
+
+<details>
+  <summary>Ответ</summary>
+
+Файл удалён только из каталога, но всё ещё открыт процессом — inode и блоки освободятся, когда будет закрыт последний дескриптор.
+```bash
+lsof +L1                              # открытые файлы с числом ссылок 0 (удалённые)
+lsof -nP | grep '(deleted)'
+ls -l /proc/<PID>/fd | grep deleted
+: > /proc/<PID>/fd/<FD>               # обнулить файл без перезапуска процесса
+cp /proc/<PID>/fd/<FD> /tmp/restored.log   # или восстановить содержимое
+```
+Либо перезапустить/сделать reload процессу. На будущее — logrotate с `postrotate` (сигнал на переоткрытие логов) или `copytruncate`.
+
+Другие причины расхождения `du` и `df`: файлы «спрятаны» под точкой монтирования (видны через `mount --bind / /mnt/root`), снапшоты btrfs/ZFS, зарезервированные блоки ext4.
+
+</details>
+
+64. При создании файла ошибка `No space left on device`, а `df -h` показывает свободное место. Что проверить?
+
+<details>
+  <summary>Ответ</summary>
+
+- Закончились inode (много мелких файлов: кэши, сессии, очереди почты):
+```bash
+df -i
+du --inodes -x -d1 / | sort -n | tail    # где больше всего файлов
+```
+- Зарезервированные для root блоки ext4 (по умолчанию 5%) — обычный пользователь упирается раньше: `tune2fs -l /dev/sdX | grep -i reserved`, изменить: `tune2fs -m 1 /dev/sdX`.
+- Дисковые квоты пользователя/проекта (`quota -u user`, `xfs_quota -x -c report`).
+- Пишем не туда: в другую ФС, в переполненный tmpfs (`/tmp`, `/dev/shm`, `/run`) или в overlay контейнера.
+- На btrfs — закончилось место под метаданные (`btrfs filesystem usage /`).
+
+</details>
+
+65. Что такое LVM? Как расширить логический том вместе с файловой системой?
+
+<details>
+  <summary>Ответ</summary>
+
+LVM — слой абстракции над дисками: **PV** (физический том: диск/раздел) → **VG** (группа томов: общий пул места) → **LV** (логический том, на нём ФС). Позволяет менять размер томов онлайн, объединять диски и делать снапшоты.
+```bash
+pvs; vgs; lvs                          # обзор
+pvcreate /dev/sdb
+vgextend vg0 /dev/sdb                  # добавить диск в группу
+lvextend -r -L +20G /dev/vg0/data      # -r: сразу расширить и ФС
+lvextend -r -l +100%FREE /dev/vg0/data
+lvcreate -s -L 5G -n data_snap /dev/vg0/data   # снапшот
+```
+Без `-r` ФС расширяют отдельно: `resize2fs /dev/vg0/data` (ext4) или `xfs_growfs /mount/point` (XFS). XFS нельзя уменьшить, ext4 уменьшают только отмонтированной.
+
+</details>
+
+66. Диск виртуальной машины увеличили в гипервизоре/облаке. Как задействовать новое место без перезагрузки?
+
+<details>
+  <summary>Ответ</summary>
+
+```bash
+echo 1 > /sys/class/block/sda/device/rescan   # перечитать размер (для SCSI; облака обычно делают сами)
+lsblk                                         # убедиться, что диск стал больше
+growpart /dev/sda 3                           # расширить раздел (пакет cloud-guest-utils / cloud-utils-growpart)
+```
+Дальше зависит от того, что на разделе:
+```bash
+# LVM
+pvresize /dev/sda3
+lvextend -r -l +100%FREE /dev/vg0/root
+# ext4 прямо на разделе
+resize2fs /dev/sda3
+# XFS (указывается точка монтирования)
+xfs_growfs /
+```
+Перед изменением разметки желательно сделать снапшот ВМ.
+
+</details>
+
+67. Как правильно добавить диск в `/etc/fstab`, чтобы ошибка не помешала загрузке системы?
+
+<details>
+  <summary>Ответ</summary>
+
+Поля строки: устройство, точка монтирования, тип ФС, опции, dump, порядок fsck.
+```
+UUID=3f2a...  /data  xfs  defaults,nofail  0  2
+server:/export  /mnt/nfs  nfs  _netdev,nofail,x-systemd.automount  0  0
+```
+- Указывайте `UUID=` (из `blkid`), а не `/dev/sdb1` — имена устройств могут поменяться.
+- `nofail` — загрузка не остановится, если устройства нет; `_netdev` — сетевая ФС, ждать сети; `x-systemd.automount` — монтировать при первом обращении.
+
+Проверка перед перезагрузкой:
+```bash
+findmnt --verify
+systemctl daemon-reload     # systemd генерирует из fstab .mount-юниты
+mount -a
+```
+Ошибка в fstab без `nofail` отправляет систему в emergency mode.
+
+</details>
+
+### Troubleshooting и инструменты диагностики
+
+68. Сервер «тормозит». Что и в каком порядке будете смотреть?
+
+<details>
+  <summary>Ответ</summary>
+
+Идти от общего к частному, по каждому ресурсу проверять утилизацию, насыщение (очереди) и ошибки (метод USE):
+```bash
+uptime                      # LA и его динамика
+dmesg -T | tail -50         # OOM, ошибки дисков, сети, hung task
+vmstat 1                    # r (очередь на CPU), si/so (swap), wa, st
+mpstat -P ALL 1             # перекос нагрузки по ядрам
+pidstat 1                   # какие процессы едят CPU
+iostat -xz 1                # %util, await, aqu-sz по дискам
+free -m                     # память, swap
+sar -n DEV 1; ss -s         # сеть, число соединений
+cat /proc/pressure/{cpu,memory,io}   # PSI: сколько времени задачи ждут ресурс
+top / htop
+```
+Затем углубляться в конкретный процесс: `strace`, `perf`, инструменты eBPF, логи приложения. Высокий `st` — проблема на стороне гипервизора (соседи), высокий `wa` при низком CPU — упираемся в диск.
+
+</details>
+
+69. Что такое strace и как им пользоваться?
+
+<details>
+  <summary>Ответ</summary>
+
+strace показывает системные вызовы процесса и сигналы — видно, какие файлы он открывает, куда подключается и на чём висит.
+```bash
+strace -f -tt -T -o /tmp/trace.log ./app      # -f потомки, -tt время, -T длительность вызова
+strace -p <PID> -f                            # подключиться к работающему процессу
+strace -e trace=openat,connect -p <PID>       # только нужные вызовы
+strace -e trace=%file ls                      # группы: %file, %network, %process
+strace -c -p <PID>                            # сводка: сколько раз и сколько времени (Ctrl+C)
+strace -y -s 200 -p <PID>                     # пути вместо номеров fd, длинные строки
+```
+Типичные находки: `ENOENT` на конфиг (ищет не там), `EACCES` (права), зависание на `connect`/`read` (ждёт сеть или БД). strace основан на ptrace и сильно замедляет процесс — на нагруженном проде осторожно, лучше инструменты eBPF.
+
+</details>
+
+70. Как узнать, какой процесс слушает порт или держит файл/точку монтирования?
+
+<details>
+  <summary>Ответ</summary>
+
+```bash
+ss -tulpn                       # слушающие TCP/UDP-сокеты и процессы (замена netstat)
+ss -tnp state established '( dport = :5432 )'
+lsof -i :443                    # кто использует порт
+lsof -p <PID>                   # все открытые файлы и сокеты процесса
+lsof /var/log/app.log           # кто держит файл
+fuser -vm /mnt/data             # кто мешает сделать umount
+fuser -v 80/tcp
+```
+Если umount говорит `target is busy`, находим процессы через `fuser -vm`/`lsof +f -- /mnt/data`; крайний вариант — `umount -l` (lazy: отсоединить сейчас, освободить, когда перестанут использовать).
+
+</details>
+
+71. Для чего используется perf? Как найти, на что процесс тратит CPU?
+
+<details>
+  <summary>Ответ</summary>
+
+perf — профилировщик ядра Linux на основе аппаратных счётчиков и сэмплирования стеков.
+```bash
+perf top                                    # «горячие» функции в реальном времени по всей системе
+perf top -p <PID>
+perf stat -p <PID> -- sleep 10              # циклы, инструкции, cache-miss, переключения контекста
+perf record -F 99 -g -p <PID> -- sleep 30   # сэмплировать стеки 30 секунд
+perf report
+```
+По данным `perf record` строят flame graph (скрипты FlameGraph Брендана Грегга) — наглядно видно, какие цепочки вызовов занимают CPU. Для читаемых стеков нужны отладочные символы и frame pointers; доступ обычным пользователям регулирует `kernel.perf_event_paranoid`.
+
+</details>
+
+72. Что такое eBPF? Какие инструменты на его основе вы знаете?
+
+<details>
+  <summary>Ответ</summary>
+
+eBPF — механизм выполнения небольших программ внутри ядра, привязанных к событиям (системные вызовы, tracepoints, функции ядра через kprobes, сетевые пакеты). Перед загрузкой программа проходит verifier (безопасность, отсутствие бесконечных циклов), затем JIT-компилируется. Накладные расходы значительно ниже, чем у strace.
+
+Применение: трассировка и observability (bcc, bpftrace, Pixie, Parca), сеть и балансировка (Cilium, XDP), безопасность (Falco, Tetragon).
+```bash
+execsnoop          # все запускаемые процессы (в Ubuntu: execsnoop-bpfcc)
+opensnoop -p <PID> # открываемые файлы
+biolatency         # гистограмма задержек дискового I/O
+tcpconnect; tcpretrans; runqlat
+bpftrace -e 'tracepoint:syscalls:sys_enter_openat { printf("%s %s\n", comm, str(args.filename)); }'
+bpftrace -e 'tracepoint:raw_syscalls:sys_enter { @[comm] = count(); }'   # системные вызовы по процессам
+bpftool prog list  # загруженные eBPF-программы
+```
+
+</details>
+
+73. Какой-то процесс периодически изменяет конфигурационный файл. Как найти, кто это делает?
+
+<details>
+  <summary>Ответ</summary>
+
+Если файл открыт постоянно — `lsof /etc/app.conf` или `fuser -v /etc/app.conf`. Для кратковременных изменений подходит auditd:
+```bash
+auditctl -w /etc/app.conf -p wa -k appconf     # следить за записью и сменой атрибутов
+ausearch -k appconf -i                         # кто (exe, pid, uid, auid) и когда
+```
+Правило постоянно — в `/etc/audit/rules.d/*.rules`. Альтернативы: `inotifywait -m /etc/app.conf` (показывает событие, но не процесс), bpftrace/`opensnoop` с фильтром по имени файла. Частые виновники: системы управления конфигурацией (Ansible/Puppet/Chef по cron), cloud-init, NetworkManager/systemd-resolved (для `/etc/resolv.conf`), пакетные обновления.
+
+</details>
+
+### Загрузка и прочее
+
+74. Что такое initramfs и GRUB2? Как добавить параметр ядра?
+
+<details>
+  <summary>Ответ</summary>
+
+GRUB2 — загрузчик: показывает меню, загружает в память ядро (`vmlinuz`) и initramfs и передаёт ядру параметры командной строки. Конфиг генерируется из `/etc/default/grub` и `/etc/grub.d/`.
+
+initramfs — небольшая временная корневая ФС в памяти с драйверами и утилитами, нужными, чтобы найти и смонтировать настоящий корень (драйверы дисков, LVM, RAID, LUKS, сеть для iSCSI/NFS). После этого выполняется `switch_root` и запускается `/sbin/init` (systemd). Пересобирать после смены драйвера/раскладки дисков:
+```bash
+dracut -f                 # RHEL/Fedora (lsinitrd — посмотреть содержимое)
+update-initramfs -u       # Debian/Ubuntu (lsinitramfs)
+```
+Параметр ядра на постоянной основе:
+```bash
+# RHEL
+grubby --update-kernel=ALL --args="console=ttyS0"
+# Debian/Ubuntu: дописать в GRUB_CMDLINE_LINUX в /etc/default/grub, затем
+update-grub               # в RHEL: grub2-mkconfig -o /boot/grub2/grub.cfg
+cat /proc/cmdline         # проверить после перезагрузки
+```
+
+</details>
+
+75. Как восстановить доступ к серверу, если забыт пароль root (есть доступ к консоли)?
+
+<details>
+  <summary>Ответ</summary>
+
+Через параметры ядра в GRUB (нажать `e` на пункте меню, дописать к строке `linux`, загрузиться по Ctrl+X):
+- RHEL/Fedora: `rd.break` — остановка в initramfs до монтирования корня:
+```bash
+mount -o remount,rw /sysroot
+chroot /sysroot
+passwd root
+touch /.autorelabel      # чтобы SELinux переразметил файлы (иначе вход может не работать)
+exit; exit
+```
+- Универсально: `init=/bin/bash`, затем `mount -o remount,rw /`, `passwd root`, `sync`, `reboot -f`.
+
+В облаке без консоли: отключить диск, подключить к другой ВМ, смонтировать, выполнить `chroot` и сменить пароль/добавить SSH-ключ; либо использовать cloud-init/агент провайдера для сброса. Если на GRUB установлен пароль или диск зашифрован — потребуются соответствующие секреты.
+
+</details>
+
+76. Как проверить, что время на сервере синхронизировано? Почему это важно?
+
+<details>
+  <summary>Ответ</summary>
+
+Рассинхронизация времени ломает TLS (сертификаты «ещё не действительны»), Kerberos (допуск ~5 минут), кворумные системы (etcd, Ceph), порядок событий в логах и мониторинге, cron-задачи.
+```bash
+timedatectl                        # System clock synchronized: yes, NTP service: active
+chronyc tracking                   # смещение, stratum, текущий источник
+chronyc sources -v                 # список NTP-серверов и их состояние
+timedatectl timesync-status        # если используется systemd-timesyncd
+```
+Современные дистрибутивы используют chrony (RHEL, Ubuntu 25.10+) или systemd-timesyncd вместо ntpd. Резкий шаг времени на работающем сервере опасен; chrony по умолчанию подстраивает время плавно и делает шаг только на старте (`makestep`).
 
 </details>
